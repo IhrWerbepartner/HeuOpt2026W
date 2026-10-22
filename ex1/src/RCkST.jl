@@ -1,4 +1,4 @@
-using MHLib
+import MHLib
 
 export RCkSTInstance, RCkSTSolution
 
@@ -78,7 +78,7 @@ end
 # jg: test reading instances is working
 inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "example_instance.txt"))
 
-mutable struct RCkSTSolution <: SubsetVectorSolution{Int}
+mutable struct RCkSTSolution <: MHLib.SubsetVectorSolution{Int}
     inst::RCkSTInstance
     objective_val::Int
     objective_val_valid::Bool
@@ -102,9 +102,9 @@ function MHLib.local_improve!(s::RCkSTSolution, par::Int, result::Result) end
 function MHLib.shaking!(s::RCkSTSolution, par::Int, result::Result) end
 function MHLib.may_be_extendible(s::RCkSTSolution) end
 function MHLib.element_removed_delta_eval!(
-    s::MISPSolution, update_obj_val::Bool=true, allow_infeasible::Bool=false
+    s::RCkSTSolution, update_obj_val::Bool=true, allow_infeasible::Bool=false
 ) end
 function MHLib.element_added_delta_eval!(
-    s::MISPSolution, update_obj_val::Bool=true, allow_infeasible::Bool=false
+    s::RCkSTSolution, update_obj_val::Bool=true, allow_infeasible::Bool=false
 ) end
 

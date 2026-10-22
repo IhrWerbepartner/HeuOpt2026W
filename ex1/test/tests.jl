@@ -1,4 +1,4 @@
-using TestItems
+import TestItems
 
 # This initialization is executed before each test item
 #@testsnippet MHLibTestInit begin
