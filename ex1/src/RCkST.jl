@@ -1,8 +1,33 @@
-import MHLib
+using MHLib: MHLib 
+using Random: Random
+using Graphs: SimpleGraph, add_edge!
 
 export RCkSTInstance, RCkSTSolution
 
 """
+    Edge
+
+Represents an edge in a graph
+"""
+struct Edge
+    v0::Int
+    v1::Int
+end
+
+"""
+    EdgeCost
+
+ - `weight`: weight of the edge in a spanning tree
+ - `resource_comsumtion`: amount of resources [1..m] this edge consumes
+"""
+struct EdgeCost
+    weight::Int
+    resource_consumtion::Vector{Int}
+end
+
+"""
+    RCkSTInstance
+
 - `n`: number of vertices.
 - `m`: number of resources per vertex.
 - `k`: vertices in spanning tree.
@@ -18,13 +43,9 @@ struct RCkSTInstance
     resources::Matrix{Int}
     edges::Matrix{Int}
     edges_hashed::Dict{Tuple{Int,Int},Int}
-    adjacency::Dict{Int,Vector{Int}}
+    # jg: TODO: test if a full adjacency matrix is faster than the indirection through the hashmap.
 end
 
-struct Edge
-    v0::Int
-    v1::Int
-end
 
 """
 Read RCkSTInstance from file
@@ -54,7 +75,7 @@ function RCkSTInstance(file_name::String)
     end
 
     resources_end_index::Int = 5 + n * m - 1
-    resources = resources = permutedims(reshape(resource_values, m, n))
+    resources = reshape(all_values[5:resources_end_index], n, m)
     edges = permutedims(
         reshape(
             all_values[(resources_end_index + 1):(resources_end_index + edge_count * (3 + m))],
@@ -66,15 +87,17 @@ function RCkSTInstance(file_name::String)
 
     # jg: TODO: figure out how to rescale the resources but avoid floating point numbers (possibly (?)) for performance reasons
 
-    index_from_edge = Dict{Tuple{Int,Int},Int}()
-    sizehint!(index_from_edge, size(edges, 1))
+    edge_costs = Dict{Edge,EdgeCost}()
+    sizehint!(edge_costs, size(edges, 1))
+
+    graph = SimpleGraph(n)
 
     # since the graph is undirected u,v == v,u -> so that they identify to the same edge
     for row in axes(edges, 1)
-        edge_key(u::Int, v::Int) = (min(u, v), max(u, v))
-        index_from_edge[edge_key(u, v)] = edge_id
+        key = (edges[row, 1], edges[row, 2])
+        index_from_edge[key] = row
     end
-    return RCkSTInstance(file_name, n, m, k, resources, edges, index_from_edge)
+    return RCkSTInstance(file_name, n, m, k, edge_count, node_resources, graph, edge_costs)
 end
 
 # jg: test reading instances is working
