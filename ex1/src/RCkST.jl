@@ -151,7 +151,7 @@ function RCkSTInstance(file_name::String)
 end
 
 # jg: test reading instances is working
-inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "example_instance.txt"))
+#inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "example_instance.txt"))
 
 #edge lookup helper
 function edge_id(inst::RCkSTInstance, u::Int, v::Int)
