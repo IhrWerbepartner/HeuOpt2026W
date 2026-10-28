@@ -162,7 +162,7 @@ function edge_id(inst::RCkSTInstance, u::Int, v::Int)
     )
 end
 
-#MISP library requires the exact names obj_val and obj_val_invalid
+#MISP library requires the exact names obj_val and obj_val_valid
 mutable struct RCkSTSolution <: MHLib.SubsetVectorSolution{Int}
     inst::RCkSTInstance
     obj_val::Int
