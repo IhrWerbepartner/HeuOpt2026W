@@ -1,35 +1,35 @@
+module RCkST
+
 import MHLib
 using Graphs: SimpleGraph, add_edge!
 
 export RCkSTInstance, RCkSTSolution,
        edge_key, edge_id, set_edges!,
        selected_vertices, resource_slack,
-       write_solution, read_solution
+       write_solution, read_solution, Edge
 
 """
     Edge
 
 Represents an edge in a graph
-
+"""
 struct Edge
     v0::Int
     v1::Int
+    Edge(u::Int, v::Int) = new(min(u, v), max(u, v))
+    Edge((u, v)::Tuple{Int, Int}) = new(min(u, v), max(u, v))
 end
--> not needed
-"""
 
 """
     EdgeCost
 
  - `weight`: weight of the edge in a spanning tree
  - `resource_comsumtion`: amount of resources [1..m] this edge consumes
-
+"""
 struct EdgeCost
     weight::Int
     resource_consumtion::Vector{Int}
 end
--> not needed
-"""
 
 """
     RCkSTInstance
@@ -52,13 +52,23 @@ struct RCkSTInstance
     resources::Matrix{Int}
     edges::Matrix{Int}
 
-    edges_hashed::Dict{Tuple{Int,Int},Int}
+    edges_hashed::Dict{Edge,Int}
     graph::SimpleGraph{Int}
     # jg: TODO: test if a full adjacency matrix is faster than the indirection through the hashmap.
 end
 
 edge_key(u::Int, v::Int) =
     (min(u, v), max(u, v))
+
+"""
+Returns the cost of the edge spanned by `u` and `v`.
+Assumes that this edge is present in the graph and errors otherwise.
+"""
+function edge_cost_from_vertices(inst::RCkSTInstance, u::Int, v::Int)::EdgeCost
+    @assert haskey(inst.edges_hashed, Edge(u, v))
+    edge_index = inst.edges_hashed[Edge(u, v)]
+    return EdgeCost(inst.edges[edge_index, 3], inst.edges[edge_index, 4:end])
+end
 
 """
 Read RCkSTInstance from file
@@ -73,6 +83,10 @@ function RCkSTInstance(file_name::String)
                 end
             end
         end
+    end
+
+    if length(all_values) < 5 # some check to asssert we actually read the file
+        error("invalid instance file: $file_name")
     end
 
     n = all_values[1]
@@ -108,7 +122,7 @@ function RCkSTInstance(file_name::String)
     # jg: TODO: figure out how to rescale the resources but avoid floating point numbers (possibly (?)) for performance reasons
 
      # Create dictionary and graph
-    edges_hashed = Dict{Tuple{Int,Int},Int}()
+    edges_hashed = Dict{Edge, Int}()
     sizehint!(edges_hashed, edge_count)
 
     graph = SimpleGraph(n)
@@ -126,7 +140,7 @@ function RCkSTInstance(file_name::String)
         all(x -> x >= 0, @view edges[row, 3:end]) ||
             error("Negative edge weight or consumption")
 
-        key = edge_key(u, v)
+        key = Edge(edge_key(u, v))
 
         haskey(edges_hashed, key) &&
             error("Duplicate edge")
@@ -404,6 +418,17 @@ function MHLib.check(s::RCkSTSolution; kwargs...)
 end
 
 #write solution in solution format
+function write_solution(io::IO, s::RCkSTSolution)
+    instance_name = splitext(basename(s.inst.file_name))[1]
+
+    println(io, instance_name)
+    for i in 1:s.sel
+        e = s.x[i]
+        println(io, "$(s.inst.edges[e, 1]) $(s.inst.edges[e, 2])")
+    end
+end
+
+#write solution in solution format
 function write_solution(path::String, s::RCkSTSolution)
 
     MHLib.check(s)
@@ -472,7 +497,6 @@ function read_solution(inst::RCkSTInstance, path::String)
 end
 
 
-
 """
 TODO
 jg: not sure what functions we actually will need, for now this is copied from the MISP example.
@@ -488,3 +512,4 @@ function MHLib.element_added_delta_eval!(
     s::RCkSTSolution, update_obj_val::Bool=true, allow_infeasible::Bool=false
 ) end
 """
+end
