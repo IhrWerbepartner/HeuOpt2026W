@@ -217,8 +217,8 @@ Idea for the randomized consturction method:
 Generate a geometric distribtuion for the solution s.t. very bad solutions do not get
 picked but we also do not pick the one with the least resource consumption all the time.
 This could lead to picking an edge which weight is lower but resource consumption only slightly higher.
-We probably need to implement this as an iterator over the array to make sure that
-we can resume iteration at any point if we do not find some neighbor etc.
+It is implemented an iterator over the array to make sure that
+we can resume iteration at any point for an earlier picked edge if we land in an empty neighborhood.
 
 The following selection of nodes is always randomized by the idea above.
 - Select an inital node based on the lowest difference between resource consumption
