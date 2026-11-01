@@ -37,7 +37,7 @@ end
 - `n`: number of vertices.
 - `m`: number of resources per vertex.
 - `k`: vertices in spanning tree.
--  `edge_count`: total number of edges in the graph
+- `edge_count`: total number of edges in the graph
 - `resoucres`: resources available at each vertex resources[v].
 - `edges`: edges in the graph with corresponding costs [1..m].
 - `edges_hashed`: index of edge tuple `(v0, v1)` in `edges`. 
@@ -71,6 +71,8 @@ function edge_cost_from_vertices(inst::RCkSTInstance, u::Int, v::Int)::EdgeCost
 end
 
 """
+    RCkSTInstance(file_name::String)
+
 Read RCkSTInstance from file
 """
 function RCkSTInstance(file_name::String)
@@ -120,6 +122,8 @@ function RCkSTInstance(file_name::String)
 
 
     # jg: TODO: figure out how to rescale the resources but avoid floating point numbers (possibly (?)) for performance reasons
+    # we also need to take into account how much of each resource is available,
+    # so in the end the ratio of resource needed / resource available should be roughly equal for all resources.
 
      # Create dictionary and graph
     edges_hashed = Dict{Edge, Int}()
