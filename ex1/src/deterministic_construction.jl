@@ -9,9 +9,9 @@ Task 2 description:
 =#
 
 include("RCkST.jl")
-using Random: seed!
 using Graphs: neighbors
-using MHLib: check
+using Random: seed!
+using MHLib: check, element_added_delta_eval!, element_removed_delta_eval!
 using .RCkST:
     RCkSTInstance,
     edge_key,
@@ -21,149 +21,158 @@ using .RCkST:
     edge_cost_from_vertices,
     RCkSTSolution
 
-struct EdgeRating
-    resource_diff::Int
-    edge_weight::Int
-end
-
-function Base.isless(a::EdgeRating, b::EdgeRating)::Bool
-    if a.resource_diff < b.resource_diff
-        return true
-    end
-    if a.resource_diff > b.resource_diff
-        return false
-    end
-    return a.edge_weight < b.edge_weight
-end
-
-"""
-Rates a neighbor by the difference of resources the new vertex aquires
-minus the cost of the edge to said vertex.
-"""
-function rate_neigbor(inst::RCkSTInstance, src::Int, neighbor::Int)::EdgeRating
-    edge_cost::EdgeCost = edge_cost_from_vertices(inst, src, neighbor)
-    return EdgeRating(
-        sum(edge_cost.resource_consumtion) - sum(inst.resources[neighbor]),
-        edge_cost.weight,
-    )
-end
-
 """
 return all the edges (`v0` corresponds to a node currently in the solution, `v1` the new node)
 with its corresponding cost that we could insert into the
 solution given the current `selected_edges`.
 """
-function neighborhood(
-    inst::RCkSTInstance, selected_edges::Vector{Int}
-)::Dict{Tuple{Int,Int},EdgeRating}
-    res::Dict{Tuple{Int,Int},EdgeRating} = Dict()
+function neighborhood!(s::RCkSTSolution, unvisited_neighbor_index::Int)::Bool
+    @assert length(s.incident_edges_per_vertex) == s.sel + 1
+    original_solution_size = s.sel
 
-    selected_nodes::Set{Int} = Set(inst.edges[selected_edges, 1:2])
-    @assert length(selected_nodes) == length(selected_edges) + 1
-    for selected_node in selected_nodes
-        for neighbor in neighbors(inst.graph, selected_node)
+    sorted_neighbors = sort(collect(s.neighboring_edegs))
 
-            # this means the neighbor is already in our solution
-            if neighbor in selected_nodes
-                continue
-            end
-
-            res[(selected_node, neighbor)] = rate_neigbor(inst, selected_node, neighbor)
+    added_vertices::Vector{Int} = []
+    sizehint!(added_vertices, length(sorted_neighbors))
+    for n in sorted_neighbors
+        if haskey(s.incident_edges_per_vertex, s.inst.edges[n, 1])
+            append!(added_vertices, s.inst.edges[n, 2])
+        elseif haskey(s.incident_edges_per_vertex, s.inst.edges[n, 2])
+            append!(added_vertices, s.inst.edges[n, 1])
+        else
+            error("invalid edge to add")
         end
     end
-    return res
+
+    worst_case_resource_use = minimum(
+        reshape(s.resource_diff, 1, s.inst.m) .- s.inst.edges[sorted_neighbors, 4:end] +
+        s.inst.resources[added_vertices, :];
+        dims=2,
+    )
+    edge_weights = s.inst.edges[sorted_neighbors, 3]
+
+    # first criterion is worst case resource use, second is edge weight
+    edges_sorted = sortperm(
+        1:length(sorted_neighbors);
+        by=x -> (worst_case_resource_use[x], -edge_weights[x]),
+        rev=true,
+    )
+
+    found_neighbor::Bool = false
+
+    for e_index in edges_sorted[unvisited_neighbor_index:end]
+        if worst_case_resource_use[e_index] < 0
+            break # all subsequent elements will only be worse, no need check them
+        end
+        s.sel += 1
+        s.x[s.sel] = sorted_neighbors[e_index]
+        if element_added_delta_eval!(s)
+            found_neighbor = true
+            @assert worst_case_resource_use[e_index] >= 0
+            break
+        end
+        #@assert length(setdiff(sorted_neighbors, s.neighboring_edegs)) == 0
+    end
+
+    if found_neighbor
+        @assert original_solution_size + 1 == s.sel
+    else
+        @assert original_solution_size == s.sel
+    end
+
+    return found_neighbor
 end
 
-"""
-Returns the difference for each resource of provided resources vs consumed ones.
-"""
-function resource_difference(
-    inst::RCkSTInstance, selected_edges::Vector{Int}
-)::Vector{Int}
-    selected_nodes = unique(inst.edges[selected_edges, 1:2])
-
-    diff = sum(inst.resources[selected_nodes, :]; dims=1)
-    return vec(diff -= sum(inst.edges[selected_edges, 4:end]; dims=1))
+function find_inital_vertex!(s::RCkSTSolution, sort::Vector{Int}, start_index::Int)::Int
+    s.sel += 1
+    s.x[s.sel] = sort[start_index]
+    while !element_added_delta_eval!(s)
+        @assert s.sel < s.inst.edge_count
+        @assert start_index < s.inst.edge_count
+        start_index += 1
+        s.sel += 1
+        s.x[s.sel] = sort[start_index]
+    end
+    return start_index
 end
 
 """
 ### Greedy construction method.
 
-    deterministc_construction(inst::RCkSTInstance)::Vector{Int}
+    deterministc_construction_delta!(s::RCkSTSolution)::Nothing
 
 Performs the following algorithm:
-- Select an inital node based on the lowest difference between resource consumption
+- Select an inital node based on the highest difference between resource consumption
 of an edge and resources provided by its endpoints.
     - For each neighbor of all edges in the current solution calculate the above difference
     - Select the best option, for ties select the lower weighted edge.
-    - If the neighbor does not fit try the next neighbors with increasing costs
+    - If the neighbor does not fit try the next neighbors with increasing costs, meaning worse lower bounds
     - If we can not find a neighbor to add for the current solution backtrack one level
     and add the second best neighbor of the previous iteration and try again.
 
-Returns the indices of edges selected spannig the tree.
+The idea is to create a solution that looks at the resources and tries to balance them as good
+as possible, leaving much resources available for local/shaking search methods.
 """
-function deterministc_construction(inst::RCkSTInstance)::Vector{Int}
-    sol::Vector{Int} = []
-    sizehint!(sol, inst.k - 1)
-    node_resources = sum.(eachrow(inst.resources))
+function deterministc_construction_delta!(s::RCkSTSolution)::Nothing
+    worst_case_resource_use = minimum(
+        s.inst.resources[s.inst.edges[:, 1], :] +
+        s.inst.resources[s.inst.edges[:, 2], :] - s.inst.edges[:, 4:end];
+        dims=2,
+    )
+    edge_weights = s.inst.edges[:, 3]
 
+    # first criterion is worst case resource use, second is edge weight
     initial_edge_costs = sortperm(
-        sum(inst.edges[:, 4:end]) .- node_resources[inst.edges[:, 1]] -
-        node_resources[inst.edges[:, 2]],
+        1:s.inst.edge_count;
+        by=x -> (worst_case_resource_use[x], -edge_weights[x]),
+        rev=true,
     )
 
-    initial_node_index = 1
-
-    append!(sol, initial_edge_costs[initial_node_index])
+    initial_node_index = find_inital_vertex!(s, initial_edge_costs, 1)
 
     # we need to keep track of the best valid neighbor we currently
     # have checked if we paint ourselves into a corner.
-    best_valid_neighbor::Vector{Int} = [1]
-    sizehint!(best_valid_neighbor, inst.k)
+    best_valid_neighbor::Vector{Int} = [initial_node_index]
+    sizehint!(best_valid_neighbor, s.inst.k)
 
-    while length(sol) < inst.k - 1
-        neighbor_ratings::Vector{Pair{Tuple{Int,Int},EdgeRating}} = sort(
-            collect(neighborhood(inst, sol)); by=last
-        ) # node ids with corresponding ratings
-        # println(stdout, "neighborhood: $neighbor_ratings")
-        found_valid_neighbor = false
-        for (new_edge, _) in neighbor_ratings[last(best_valid_neighbor):end]
-            new_edge_index = inst.edges_hashed[Edge(new_edge)]
-            @assert !(new_edge_index in sol)
-            append!(sol, new_edge_index)
-            if all(>=(0), resource_difference(inst, sol))
-                found_valid_neighbor = true
-                append!(best_valid_neighbor, 1)
-                break
-            else
-                pop!(sol)
-            end
-        end
-        if !found_valid_neighbor
-            best_valid_neighbor[end] += 1
-            println(
-                "no valid neighbor found, current solution (size: $(length(sol))): $sol, best_valid_neighbor: $best_valid_neighbor",
-            ) # for now
-        end
-
-        if best_valid_neighbor[end] > length(neighbor_ratings)
+    while s.sel < s.inst.k - 1
+        found_neighbor = false
+        if neighborhood!(s, best_valid_neighbor[end])
+            append!(best_valid_neighbor, 1)
+            found_neighbor = true
+        else
+            s.sel -= 1
+            element_removed_delta_eval!(s)
             if length(best_valid_neighbor) > 1
-                pop!(sol)
                 pop!(best_valid_neighbor)
                 best_valid_neighbor[end] += 1
+                println(
+                    stderr,
+                    "backtracking, sol size: $(s.sel), diff: $(s.resource_diff), n: $best_valid_neighbor",
+                )
             else
                 # we need to find another initial starting positon
                 initial_node_index += 1
-                sol[1] = initial_edge_costs[initial_node_index]
+                println(stdout, "restart, index: $initial_node_index")
+                initial_node_index = find_inital_vertex!(
+                    s, initial_edge_costs, initial_node_index
+                )
             end
         end
-        @assert length(sol) == length(best_valid_neighbor)
-        if length(sol) % 10 == 0
-            println(stdout, "current solution size: $(length(sol))")
+        @assert s.sel == length(best_valid_neighbor)
+        @debug begin
+            if s.sel % 10 == 0
+                println(stdout, "current solution size: $(s.sel), diff: $(s.resource_diff)")
+            end
         end
     end
-    return sol
+    s.x = [s.x[1:s.sel]; setdiff(1:s.inst.edge_count, s.x[1:s.sel])]
+    s.obj_val_valid = true
+    return nothing
 end
+
+module WeightedPermutation
+using Random: seed!
 
 """
 Idea taken from
@@ -171,29 +180,27 @@ Idea taken from
 - https://doi.org/10.1016/j.ipl.2005.11.003
 - https://stackoverflow.com/a/15205104
 """
-struct WeightedPermutation
+struct Iterator
     data
     permutation::Vector{Int}
-    function WeightedPermutation(
-        data, weights::AbstractVector{<:Real}
-    )::WeightedPermutation
-        @assert length(data) == length(weights)
+    function Iterator(data, weights::AbstractVector{<:Real})::Iterator
+        @assert length(data) <= length(weights)
         @assert all(>=(0), weights)
-        perm = rand(length(weights)) .^ (1 ./ weights)
+        w = weights[1:length(data)]
+        perm = rand(length(w)) .^ (1 ./ w)
         return new(data, sortperm(perm; rev=true))
     end
-    function WeightedPermutation(
-        data, weights::AbstractVector{<:Real}, seed::Int
-    )::WeightedPermutation
-        @assert length(data) == length(weights)
+    function Iterator(data, weights::AbstractVector{<:Real}, seed::Int)::Iterator
+        @assert length(data) <= length(weights)
         @assert all(>=(0), weights)
         seed!(seed)
-        perm = rand(length(weights)) .^ (1 ./ weights)
+        w = weights[1:length(data)]
+        perm = rand(length(w)) .^ (1 ./ w)
         return new(data, sortperm(perm; rev=true))
     end
 end
 
-function Base.iterate(iter::WeightedPermutation, state=1)
+function Base.iterate(iter::Iterator, state=1)
     if state > length(iter.data)
         return nothing
     end
@@ -206,11 +213,75 @@ densitiy value of the geometrc distribtuion for `k` and probably `p`.
 function dgeom(k::AbstractArray, prob::Real)
     return ((1 - prob) .^ k) * prob
 end
+end
+
+
+"""
+Identical to the deterministic version, but randomize the best neighbors a bit.
+This is controlled by `weights`.
+"""
+function randomized_neighborhood!(
+    s::RCkSTSolution, unvisited_neighbor_index::Int, weights::Vector{<:Real}
+)::Bool
+    @assert length(s.incident_edges_per_vertex) == s.sel + 1
+    original_solution_size = s.sel
+
+    sorted_neighbors = sort(collect(s.neighboring_edegs))
+
+    added_vertices::Vector{Int} = []
+    sizehint!(added_vertices, length(sorted_neighbors))
+    for n in sorted_neighbors
+        if haskey(s.incident_edges_per_vertex, s.inst.edges[n, 1])
+            append!(added_vertices, s.inst.edges[n, 2])
+        elseif haskey(s.incident_edges_per_vertex, s.inst.edges[n, 2])
+            append!(added_vertices, s.inst.edges[n, 1])
+        else
+            error("invalid edge to add")
+        end
+    end
+
+    worst_case_resource_use = minimum(
+        reshape(s.resource_diff, 1, s.inst.m) .- s.inst.edges[sorted_neighbors, 4:end] +
+        s.inst.resources[added_vertices, :];
+        dims=2,
+    )
+    edge_weights = s.inst.edges[sorted_neighbors, 3]
+
+    # first criterion is worst case resource use, second is edge weight
+    edges_sorted = sortperm(
+        1:length(sorted_neighbors);
+        by=x -> (worst_case_resource_use[x], -edge_weights[x]),
+        rev=true,
+    )
+
+    found_neighbor::Bool = false
+
+    random_iter = WeightedPermutation.Iterator(edges_sorted[unvisited_neighbor_index:end], weights, s.x[s.sel])
+
+    for e_index in random_iter
+        s.sel += 1
+        s.x[s.sel] = sorted_neighbors[e_index]
+        if element_added_delta_eval!(s)
+            found_neighbor = true
+            @assert worst_case_resource_use[e_index] >= 0
+            break
+        end
+    end
+
+    if found_neighbor
+        @assert original_solution_size + 1 == s.sel
+    else
+        @assert original_solution_size == s.sel
+    end
+
+    return found_neighbor
+end
+
 
 """
 ### Randomized construction method.
 
-    randomized_construction(inst::RCkSTInstance)::Vector{Int}
+    randomized_construction_delta!(s::RCkSTSolution; seed=nothing)::Nothing
 
 Idea for the randomized consturction method:
 
@@ -221,105 +292,102 @@ It is implemented an iterator over the array to make sure that
 we can resume iteration at any point for an earlier picked edge if we land in an empty neighborhood.
 
 The following selection of nodes is always randomized by the idea above.
-- Select an inital node based on the lowest difference between resource consumption
+- Select an inital node based on the highest difference between resource consumption
 of an edge and resources provided by its endpoints.
     - For each neighbor of all edges in the current solution calculate the above difference
     - Select the best option, for ties select the lower weighted edge.
-    - If the neighbor does not fit try the next neighbors with increasing costs
+    - If the neighbor does not fit try the next neighbors with increasing costs, meaning worse lower bounds
     - If we can not find a neighbor to add for the current solution backtrack one level
     and add the second best neighbor of the previous iteration and try again.
 
-Returns the indices of edges selected spannig the tree.
+The idea is to by chance include neighbors with better weight characteristics, then the deterministic solution.
 """
-function randomized_construction(inst::RCkSTInstance)::Vector{Int}
-    sol::Vector{Int} = []
-    sizehint!(sol, inst.k - 1)
-    node_resources = sum.(eachrow(inst.resources))
+function randomized_construction_delta!(s::RCkSTSolution; seed=nothing)::Nothing
+    worst_case_resource_use = minimum(
+        s.inst.resources[s.inst.edges[:, 1], :] +
+        s.inst.resources[s.inst.edges[:, 2], :] - s.inst.edges[:, 4:end];
+        dims=2,
+    )
 
+    isnothing(seed) ? seed!() : seed!(seed)
+
+
+    edge_weights = s.inst.edges[:, 3]
+
+    # first criterion is worst case resource use, second is edge weight
     initial_edge_costs = sortperm(
-        sum(inst.edges[:, 4:end]) .- node_resources[inst.edges[:, 1]] -
-        node_resources[inst.edges[:, 2]],
+        1:s.inst.edge_count;
+        by=x -> (worst_case_resource_use[x], -edge_weights[x]),
+        rev=true,
     )
-    random_weights = dgeom(1:inst.edge_count, 0.7)
-    initial_edge_iter = WeightedPermutation(
-        initial_edge_costs, random_weights[1:length(initial_edge_costs)]
-    )
+    
+    #permute the initial nodes slightly
+    initial_edge_costs = initial_edge_costs[WeightedPermutation.Iterator(
+        initial_edge_costs, WeightedPermutation.dgeom(1:s.inst.edge_count, 0.5)
+    ).permutation]
 
-    (initial_edge_index, initial_edge_state) = iterate(initial_edge_iter)
+    initial_node_index = find_inital_vertex!(s, initial_edge_costs, 1)
 
-    append!(sol, initial_edge_index)
+    random_weights = WeightedPermutation.dgeom(1:s.inst.edge_count, 0.6)
 
     # we need to keep track of the best valid neighbor we currently
     # have checked if we paint ourselves into a corner.
-    best_valid_neighbor::Vector{Int} = [1]
-    sizehint!(best_valid_neighbor, inst.k)
+    best_valid_neighbor::Vector{Int} = [initial_node_index]
+    sizehint!(best_valid_neighbor, s.inst.k)
 
-    while length(sol) < inst.k - 1
-        neighbor_ratings::Vector{Pair{Tuple{Int,Int},EdgeRating}} = sort(
-            collect(neighborhood(inst, sol)); by=last
-        ) # node ids with corresponding ratings
-        # println(stdout, "neighborhood: $neighbor_ratings")
-        found_valid_neighbor = false
-        unexplored_neighbors = neighbor_ratings[last(best_valid_neighbor):end]
-        for (new_edge, _) in WeightedPermutation(
-            unexplored_neighbors, random_weights[1:length(unexplored_neighbors)], sol[end]
-        )
-            new_edge_index = inst.edges_hashed[Edge(new_edge)]
-            @assert !(new_edge_index in sol)
-            append!(sol, new_edge_index)
-            if all(>=(0), resource_difference(inst, sol))
-                found_valid_neighbor = true
-                append!(best_valid_neighbor, 1)
-                break
-            else
-                pop!(sol)
-            end
-        end
-        if !found_valid_neighbor
-            best_valid_neighbor[end] += 1
-            # println( "no valid neighbor found, current solution (size: $(length(sol))): $sol, best_valid_neighbor: $best_valid_neighbor",) # for now
-        end
-
-        if best_valid_neighbor[end] > 30 # could also be, length(neighbor_ratings) but this can lead to very long searches in resource intensive neighborhoods where we do not find a quick way out.
+    while s.sel < s.inst.k - 1
+        found_neighbor = false
+        if randomized_neighborhood!(s, best_valid_neighbor[end], random_weights)
+            append!(best_valid_neighbor, 1)
+            found_neighbor = true
+        else
+            s.sel -= 1
+            element_removed_delta_eval!(s)
             if length(best_valid_neighbor) > 1
-                pop!(sol)
                 pop!(best_valid_neighbor)
                 best_valid_neighbor[end] += 1
+                println(
+                    stderr,
+                    "backtracking, sol size: $(s.sel), diff: $(s.resource_diff), n: $(last(best_valid_neighbor, 5))",
+                )
             else
                 # we need to find another initial starting positon
-                iter_result = iterate(initial_edge_iter, initial_edge_state)
-                if iter_result === nothing
-                    error("exhausted all starting nodes somehow") # for now
-                end
-                sol[1] = iter_result[1]
-                initial_edge_state = iter_result[2]
+                initial_node_index += 1
+                println(stdout, "restart, index: $initial_node_index")
+                initial_node_index = find_inital_vertex!(
+                    s, initial_edge_costs, initial_node_index
+                )
             end
         end
-        @assert length(sol) == length(best_valid_neighbor)
-        if length(sol) % 10 == 0
-            println(stdout, "current solution size: $(length(sol))")
+        @assert s.sel == length(best_valid_neighbor)
+        @debug begin
+            if s.sel % 10 == 0
+                println(stdout, "current solution size: $(s.sel), diff: $(s.resource_diff)")
+            end
         end
     end
-    return sol
+    s.x = [s.x[1:s.sel]; setdiff(1:s.inst.edge_count, s.x[1:s.sel])]
+    return nothing
 end
 
-#inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "test", "100", "n100_k30_m2_s20019.txt"))
-#inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "test", "200", "n200_k60_m3_s20021.txt"))
-#inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "test", "1000", "n1000_k300_m3_s20021.txt"))
-inst = RCkSTInstance(
-    joinpath(@__DIR__, "..", "instances", "test", "10000", "n10000_k3000_m3_s20020.txt")
-)
-# sol = deterministc_construction(inst)
-sol = randomized_construction(inst)
+function run_construction()
+    #inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "test", "100", "n100_k30_m2_s20019.txt"))
+    #inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "test", "200", "n200_k60_m3_s20021.txt"))
+    #inst = RCkSTInstance(joinpath(@__DIR__, "..", "instances", "test", "1000", "n1000_k300_m3_s20021.txt"))
+    inst = RCkSTInstance(
+        joinpath(
+            @__DIR__, "..", "instances", "test", "10000", "n10000_k3000_m3_s20020.txt"
+        ),
+    )
 
-# =============== PRINTING ================
-rckst_sol::RCkSTSolution = RCkSTSolution(
-    inst,
-    sum(inst.edges[sol, 3]),
-    true,
-    [sol; setdiff(1:inst.edge_count, sol)],
-    length(sol),
-)
-check(rckst_sol)
-write_solution(stdout, rckst_sol)
-println(stderr, "spanning tree weight: $(rckst_sol.obj_val)")
+    rckst_sol::RCkSTSolution = RCkSTSolution(inst)
+    #deterministc_construction_delta!(rckst_sol)
+    randomized_construction_delta!(rckst_sol)
+
+    check(rckst_sol)
+    write_solution("sol.txt", rckst_sol)
+    return println(stderr, "spanning tree weight: $(rckst_sol.obj_val)")
+    #println(stderr, "slack: $(resource_difference(inst, sol))")
+end
+
+run_construction()
