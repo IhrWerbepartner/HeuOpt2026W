@@ -36,9 +36,9 @@ function neighborhood!(s::RCkSTSolution, unvisited_neighbor_index::Int)::Bool
     sizehint!(added_vertices, length(sorted_neighbors))
     for n in sorted_neighbors
         if haskey(s.incident_edges_per_vertex, s.inst.edges[n, 1])
-            append!(added_vertices, s.inst.edges[n, 2])
+            push!(added_vertices, s.inst.edges[n, 2])
         elseif haskey(s.incident_edges_per_vertex, s.inst.edges[n, 2])
-            append!(added_vertices, s.inst.edges[n, 1])
+            push!(added_vertices, s.inst.edges[n, 1])
         else
             error("invalid edge to add")
         end
@@ -138,7 +138,7 @@ function deterministc_construction_delta!(s::RCkSTSolution)::Nothing
     while s.sel < s.inst.k - 1
         found_neighbor = false
         if neighborhood!(s, best_valid_neighbor[end])
-            append!(best_valid_neighbor, 1)
+            push!(best_valid_neighbor, 1)
             found_neighbor = true
         else
             s.sel -= 1

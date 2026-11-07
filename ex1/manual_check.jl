@@ -1,7 +1,25 @@
+
 import MHLib
 using Graphs: nv, ne, has_edge
 
+# Load our RC-k-ST module
 include(joinpath(@__DIR__, "src", "RCkST.jl"))
+
+# Import the functions needed for testing
+using .RCkST:
+    RCkSTInstance,
+    RCkSTSolution,
+    edge_id,
+    set_edges!,
+    selected_vertices,
+    selected_is_connected,
+    resource_slack,
+    write_solution,
+    read_solution
+
+# Load Beam Search
+include(joinpath(@__DIR__, "src", "beam_search.jl"))
+
 
 # MHLib.check deliberately throws errors for invalid complete solutions.
 # This helper ensures we catch the *expected* error, not an unrelated bug.
@@ -248,3 +266,70 @@ function run_manual_checks()
 end
 
 run_manual_checks()
+
+
+function test_beam_search()
+
+    println("\n===== BEAM SEARCH TEST =====")
+
+    inst = RCkSTInstance(
+        joinpath(
+            @__DIR__,
+            "instances",
+            "example_instance.txt"
+        )
+    )
+
+    # First test a sufficiently large beam
+    best = beam_search(inst, 1000)
+
+    @assert best !== nothing "No feasible solution found"
+
+    println("Selected edges: ", best.selected_edges)
+    println("Selected vertices: ", best.selected_vertices)
+    println("Objective: ", best.weight)
+    println("Resource slack: ", best.resource_slack)
+
+    # Expected properties of the optimal example
+    @assert length(best.selected_vertices) == inst.k
+    @assert length(best.selected_edges) == inst.k - 1
+    @assert best.weight == 8
+    @assert all(x -> x >= 0, best.resource_slack)
+
+    # Convert BeamState to the official solution type
+    sol = RCkSTSolution(inst)
+    set_edges!(sol, best.selected_edges)
+
+    # Independently recompute objective and resources
+    @assert MHLib.obj(sol) == best.weight
+    @assert resource_slack(sol) == best.resource_slack
+    @assert selected_vertices(sol) == best.selected_vertices
+
+    # Validate complete tree
+    MHLib.check(sol)
+
+    println("PASS: Beam Search found a valid solution")
+
+    # Compare different beam widths
+    println("\nComparing beam widths:")
+
+    for beta in [1, 2, 5, 10, 20]
+
+        elapsed = @elapsed candidate = beam_search(inst, beta)
+
+        if candidate === nothing
+            println("beta=$beta: no feasible solution")
+        else
+            println(
+                "beta=$beta: weight=$(candidate.weight), ",
+                "slack=$(candidate.resource_slack), ",
+                "time=$(round(elapsed, digits=4)) s"
+            )
+        end
+    end
+
+    println("\nBEAM SEARCH TEST COMPLETED")
+end
+
+test_beam_search()
+

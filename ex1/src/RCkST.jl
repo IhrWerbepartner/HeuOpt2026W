@@ -33,6 +33,15 @@ struct Edge
     Edge((u, v)::Tuple{Int,Int}) = new(min(u, v), max(u, v))
 end
 
+Base.:(==)(a::Edge, b::Edge) =
+    a.v0 == b.v0 && a.v1 == b.v1
+
+Base.isequal(a::Edge, b::Edge) =
+    a == b
+
+Base.hash(e::Edge, h::UInt) =
+    hash((e.v0, e.v1), h)
+
 """
     EdgeCost
 
@@ -172,7 +181,7 @@ end
 
 #edge lookup helper
 function edge_id(inst::RCkSTInstance, u::Int, v::Int)
-    return get(inst.edges_hashed, edge_key(u, v), nothing)
+    return get(inst.edges_hashed, Edge(u, v), nothing)
 end
 
 #MISP library requires the exact names obj_val and obj_val_valid
